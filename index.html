@@ -550,11 +550,11 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
     <div id="form-register" hidden>
       <div class="form-group">
         <label>Megjelenített név</label>
-        <input type="text" id="reg-name" placeholder="pl. Kiss Péter">
+        <input type="text" id="reg-name" maxlength="60" placeholder="pl. Kiss Péter">
       </div>
       <div class="form-group">
         <label>Felhasználónév</label>
-        <input type="text" id="reg-username" placeholder="pl. kispecc">
+        <input type="text" id="reg-username" maxlength="40" placeholder="pl. kispecc">
       </div>
       <div class="form-group">
         <label>Email</label>
@@ -740,6 +740,12 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
       'Spanyolország':'es','Franciaország':'fr','Anglia':'gb-eng',
       'Portugália':'pt','Németország':'de','Hollandia':'nl','Olaszország':'it',
     }
+    // Felhasználótól származó szöveg (név, felhasználónév, e-mail, szabad szöveges tipp)
+    // HTML-escape-elése innerHTML-be illesztés előtt (XSS ellen).
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
     const _flagMissLogged = new Set();
     function getFlag(name) {
       if (!name || name === 'TBD') return '';
@@ -760,6 +766,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
     let allMatches = {};
     let allTips = {};
     let allUsers = {};
+    let allUserPrivate = {};         // uid → { email } — csak adminnak töltődik be (userPrivate ág)
     let appConfig = {};
     let allPretournament = {};
     let liveOverlay = {};            // matchId → { status, home, away, scorersHome, scorersAway, raw } (ingyenes élő forrás)
@@ -885,14 +892,12 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
         const uid = cred.user.uid;
         currentUser = cred.user; // szükséges hogy fbGet/fbPut működjön azonnal
         await fbPut(`users/${uid}`, {
-          displayName: name, username, email,
+          displayName: name, username,
           status: 'pending', createdAt: new Date().toISOString()
         });
         if (!currentUser) currentUser = cred.user; // védelem race condition ellen
-        const admins = await fbGet('admins');
-        if (!admins) {
-          await fbPut(`admins/${uid}`, true);
-        }
+        // Az e-mail külön ágba kerül, amit csak a felhasználó maga és az admin olvashat.
+        await fbPut(`userPrivate/${uid}`, { email });
       } catch (e) {
         errEl.textContent = firebaseAuthError(e.code);
       } finally {
@@ -906,7 +911,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
       clearInterval(_liveDataTimer);
       clearInterval(_liveOverlayTimer);
       currentUser = null; currentUserData = null; isAdminUser = false;
-      allMatches = {}; allTips = {}; allUsers = {};
+      allMatches = {}; allTips = {}; allUsers = {}; allUserPrivate = {}; appConfig = {};
       await auth.signOut();
     }
 
@@ -1021,8 +1026,47 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
       allUsers = usersRaw || {};
       appConfig = configRaw || {};
       allPretournament = pretournRaw || {};
+      if (isAdminUser) {
+        // Csak admin olvashatja: e-mail-címek és a football-data API kulcs.
+        const [privRaw, cfgPrivRaw] = await Promise.all([
+          fbGet('userPrivate').catch(() => { errors.push('userPrivate'); return null; }),
+          fbGet('configPrivate').catch(() => { errors.push('configPrivate'); return null; }),
+        ]);
+        allUserPrivate = privRaw || {};
+        if (cfgPrivRaw && cfgPrivRaw.apiKey) appConfig.apiKey = cfgPrivRaw.apiKey;
+        if (errors.length === 0) await migratePrivateData(configRaw);
+      }
       if (errors.length > 0) showBanner(`Adatbetöltési hiba (${errors.join(', ')}). Töltsd újra az oldalt!`);
       else hideBanner();
+    }
+
+    // Egyszeri migráció (admin belépésekor fut, idempotens): a régi, mindenki által
+    // olvasható helyekről áthelyezi az érzékeny adatot az admin-only ágakba.
+    //   users/{uid}/email → userPrivate/{uid}/email
+    //   config/apiKey     → configPrivate/apiKey
+    async function migratePrivateData(configRaw) {
+      let moved = 0;
+      for (const [uid, u] of Object.entries(allUsers)) {
+        if (!u || u.email == null) continue;
+        try {
+          if (!allUserPrivate[uid] || allUserPrivate[uid].email == null) {
+            await fbPut(`userPrivate/${uid}/email`, u.email);
+            allUserPrivate[uid] = { ...(allUserPrivate[uid] || {}), email: u.email };
+          }
+          await fbDelete(`users/${uid}/email`);
+          delete u.email;
+          moved++;
+        } catch (e) { console.warn('[migracio] e-mail áthelyezés sikertelen', uid, e.message); }
+      }
+      if (configRaw && configRaw.apiKey != null) {
+        try {
+          await fbPatch('configPrivate', { apiKey: configRaw.apiKey });
+          await fbDelete('config/apiKey');
+          appConfig.apiKey = configRaw.apiKey;
+          moved++;
+        } catch (e) { console.warn('[migracio] API kulcs áthelyezés sikertelen', e.message); }
+      }
+      if (moved > 0) showToast(`Adatvédelmi migráció: ${moved} rekord áthelyezve.`);
     }
 
     // === NOTIFICATIONS ===
@@ -1340,7 +1384,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
       if (locked) {
         const rows = Object.entries(allTips).filter(([u]) => u !== currentUser.uid).map(([u,tips]) => {
           const t = tips[matchId];
-          const uname = (allUsers[u] && allUsers[u].displayName) || '???';
+          const uname = esc((allUsers[u] && allUsers[u].displayName) || '???');
           if (!t) return `<div class="other-tip-row"><span>${uname}</span><span class="tip-locked">Nem tippelt</span></div>`;
           let pts = '';
           if (hasResult) { const p = calculateMatchPoints(t, m.resultHome, m.resultAway); pts = ptsBadge(p); }
@@ -1944,7 +1988,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
           .filter(([, tips]) => tips[match.id])
           .map(([u, tips]) => {
             const t = tips[match.id];
-            const uname = (allUsers[u] && allUsers[u].displayName) || '???';
+            const uname = esc((allUsers[u] && allUsers[u].displayName) || '???');
             let pts = '';
             if (hasResult) {
               const p = calculateMatchPoints(t, match.resultHome, match.resultAway);
@@ -2042,7 +2086,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
       for (const [u, tips] of Object.entries(allTips)) {
         const t = tips[matchId];
         if (!t) continue;
-        const uname = (allUsers[u] && allUsers[u].displayName) || '???';
+        const uname = esc((allUsers[u] && allUsers[u].displayName) || '???');
         count++; sumH += t.home; sumA += t.away;
         let pts = null;
         if (hasRes) {
@@ -2319,7 +2363,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
         const me = currentUser.uid;
         const players = Object.entries(allUsers)
           .filter(([, u]) => u.status === 'active')
-          .map(([uid, u]) => ({ uid, name: u.displayName || '?', pre: (allPretournament && allPretournament[uid]) || {} }))
+          .map(([uid, u]) => ({ uid, name: esc(u.displayName || '?'), pre: (allPretournament && allPretournament[uid]) || {} }))
           .sort((a, b) => (a.uid === me ? -1 : b.uid === me ? 1 : a.name.localeCompare(b.name, 'hu')));
         const noTip = '<span style="color:var(--text2);font-weight:400">&mdash;</span>';
         const boardHtml = (title, pts, getVal) => `
@@ -2341,8 +2385,8 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
             <div class="card" style="margin-bottom:16px">
               <div style="font-size:13px;color:var(--text2)">&#x1F512; Az előzetes tippek (gólkirály, végső győztes) le vannak zárva. Alább mindenki tippje látható — a kiértékelés a VB végén történik.</div>
             </div>
-            ${boardHtml('&#x26BD; Gólkirály-tippek', POINTS.topScorer, pre => pre.topScorer || '')}
-            ${boardHtml('&#x1F3C6; VB-győztes-tippek', POINTS.winner, pre => pre.winner ? `${getFlag(pre.winner)}${pre.winner}` : '')}
+            ${boardHtml('&#x26BD; Gólkirály-tippek', POINTS.topScorer, pre => esc(pre.topScorer || ''))}
+            ${boardHtml('&#x1F3C6; VB-győztes-tippek', POINTS.winner, pre => pre.winner ? `${getFlag(pre.winner)}${esc(pre.winner)}` : '')}
           </div>`;
         return;
       }
@@ -2361,7 +2405,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
             <div class="form-group">
               <label>Gólkirály neve (szabad szöveges)</label>
               <input type="text" id="pre-topscorer" placeholder="pl. Kylian Mbappé"
-                value="${myPretip.topScorer || ''}" ${!open ? 'disabled' : ''}>
+                value="${esc(myPretip.topScorer || '')}" ${!open ? 'disabled' : ''}>
             </div>
             <div class="form-group">
               <label>Végső győztes csapat</label>
@@ -2437,7 +2481,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
       document.getElementById('bracket-modal-content').innerHTML = `
         <div style="text-align:center;margin-bottom:6px">
           ${rank > 0 ? `<div style="font-size:11px;color:var(--text2);font-weight:700;letter-spacing:.04em">${rank}. HELYEZETT</div>` : ''}
-          <div class="bm-tname" style="font-size:20px">${u.displayName}</div>
+          <div class="bm-tname" style="font-size:20px">${esc(u.displayName)}</div>
           <div style="font-size:26px;font-weight:800;color:var(--accent);font-family:var(--font-display)">${bd.total} pont</div>
         </div>
         <div class="others-tips-title" style="margin:10px 0 4px">Összes tipp (${played.length})</div>
@@ -2487,7 +2531,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
             const isMe = u.uid === currentUser.uid;
             return `<div class="podium-card ${PCLASS[i]}">
               <div class="podium-medal">${MEDALS[i]}</div>
-              <div class="podium-name">${u.displayName}</div>
+              <div class="podium-name">${esc(u.displayName)}</div>
               ${isMe ? '<div class="podium-me">te</div>' : ''}
               <div class="podium-pts">${u.bd.total}</div>
               <div class="podium-tipped">${u.tippedCount} tipp</div>
@@ -2501,7 +2545,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
         const liveSuffix = (isLive && u.bd.livePts) ? ` <span style="color:var(--danger);font-size:11px">(+${u.bd.livePts})</span>` : '';
         const mainRow = `<tr${rowStyle} onclick="toggleScoreboardBreakdown('${u.uid}')">
           <td class="rank">${i + 1}.</td>
-          <td class="player-name">${u.displayName}${isMe ? ' <span style="color:var(--text2);font-size:11px">(te)</span>' : ''}</td>
+          <td class="player-name">${esc(u.displayName)}${isMe ? ' <span style="color:var(--text2);font-size:11px">(te)</span>' : ''}</td>
           <td style="color:var(--text2);font-size:12px;text-align:center">${u.tippedCount} tipp</td>
           <td class="score-pts">${u.bd.total} pt${liveSuffix} <span style="color:var(--text2);font-size:11px">&#x25BE;</span></td>
         </tr>`;
@@ -2556,7 +2600,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
       let bestTipper = null, bestTipperPts = -1;
       for (const uid of activeUids) {
         const bd = calculateUserTotalBreakdown(uid);
-        if (bd.matchPts > bestTipperPts) { bestTipperPts = bd.matchPts; bestTipper = allUsers[uid]?.displayName || uid; }
+        if (bd.matchPts > bestTipperPts) { bestTipperPts = bd.matchPts; bestTipper = esc(allUsers[uid]?.displayName || uid); }
       }
 
       // Most exact scores
@@ -2568,7 +2612,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
           const t = myTips[m.id];
           if (t && t.home === m.resultHome && t.away === m.resultAway) exact++;
         }
-        if (exact > mostExactCount) { mostExactCount = exact; mostExact = allUsers[uid]?.displayName || uid; }
+        if (exact > mostExactCount) { mostExactCount = exact; mostExact = esc(allUsers[uid]?.displayName || uid); }
       }
 
       // Most tipped match
@@ -2635,8 +2679,8 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
       const pendingHtml = pending.length ? pending.map(([uid, u]) => `
         <div class="user-row">
           <div class="user-info">
-            <div class="name">${u.displayName} <span style="color:var(--text2);font-size:12px">@${u.username}</span></div>
-            <div class="email">${u.email}</div>
+            <div class="name">${esc(u.displayName)} <span style="color:var(--text2);font-size:12px">@${esc(u.username)}</span></div>
+            <div class="email">${esc(allUserPrivate[uid]?.email || '')}</div>
           </div>
           <div class="user-actions">
             <button class="btn btn-primary btn-sm" onclick="approveUser('${uid}')">Elfogad</button>
@@ -2650,8 +2694,8 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
         return `
           <div class="user-row">
             <div class="user-info">
-              <div class="name">${u.displayName} ${isAdmin ? '<span class="badge badge-admin">Admin</span>' : ''}</div>
-              <div class="email">${u.email}</div>
+              <div class="name">${esc(u.displayName)} ${isAdmin ? '<span class="badge badge-admin">Admin</span>' : ''}</div>
+              <div class="email">${esc(allUserPrivate[uid]?.email || '')}</div>
             </div>
             <div class="user-actions">
               ${!isMe ? `<button class="btn btn-ghost btn-sm" onclick="toggleAdminRole('${uid}')">Admin toggle</button>` : ''}
@@ -2764,7 +2808,7 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
           <h3>API beállítások</h3>
           <div class="form-group">
             <label>football-data.org API kulcs</label>
-            <input type="text" id="admin-apikey" value="${appConfig.apiKey || ''}" placeholder="pl. abc123...">
+            <input type="text" id="admin-apikey" value="${esc(appConfig.apiKey || '')}" placeholder="pl. abc123...">
           </div>
           <div class="form-group">
             <label>Előzetes tippek határideje (UTC)</label>
@@ -2781,10 +2825,13 @@ details.group-accordion[open] > summary { border-bottom: 1px solid var(--border)
       const key = document.getElementById('admin-apikey').value.trim();
       const deadlineRaw = document.getElementById('admin-deadline').value;
       const deadline = deadlineRaw ? new Date(deadlineRaw).toISOString() : null;
-      const update = { apiKey: key };
-      if (deadline) update.pretournamentDeadline = deadline;
-      await fbPatch('config', update);
-      Object.assign(appConfig, update);
+      // Az API kulcs az admin-only configPrivate ágba kerül, a többi beállítás a config-ba.
+      await fbPatch('configPrivate', { apiKey: key });
+      appConfig.apiKey = key;
+      if (deadline) {
+        await fbPatch('config', { pretournamentDeadline: deadline });
+        appConfig.pretournamentDeadline = deadline;
+      }
       document.getElementById('admin-api-status').textContent = '&#x2713; Mentve';
     }
 

@@ -4,10 +4,13 @@ node_modules/
 
 # Local-only docs / project notes (not deployed)
 CLAUDE.md
-docs/
+docs/*
+# ...kivéve a README képernyőképeit
+!docs/screenshots/
 
 # Local working artifacts (screenshots, previews, tooling)
 *.png
+!docs/screenshots/*.png
 *-debug.log
 .playwright-mcp/
 .superpowers/
