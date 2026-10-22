@@ -72,7 +72,7 @@ Smaller issues along the way:
 
 ## Screenshots
 
-Names in the screenshots are blurred.
+To protect the real players' privacy, the screenshots show the real app running on **fictional demo data**: invented players, `example.com` emails and a mocked mid-group-stage moment with one live match.
 
 | Leaderboard | Live match |
 |---|---|
@@ -91,4 +91,4 @@ Names in the screenshots are blurred.
 
 ---
 
-> **Note:** The tournament is over, so the live features (score sync, live overlay) are no longer running. The screenshots were taken during the tournament.
+> **Note:** The tournament is over, so the live features (score sync, live overlay) are no longer running. The screenshots were made afterwards with demo data (see above).
