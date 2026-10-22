@@ -1,0 +1,33 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # A sync logika (eredmény-kinyerés, 90 perces állás, VAR-korrekció, névszinkron) unit tesztjei.
+      - name: Unit tests (sync-results)
+        run: node .github/scripts/sync-results.test.js
+
+      # Az index.html inline scriptjének szintaxis-ellenőrzése (nincs build lépés, ami elkapná).
+      - name: Syntax check (index.html inline script)
+        run: |
+          node -e "
+            const s = require('fs').readFileSync('index.html', 'utf8');
+            const code = [...s.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).join('\n;\n');
+            require('fs').writeFileSync('/tmp/inline.js', code);
+          "
+          node --check /tmp/inline.js
+
+      - name: Validate JSON configs (database rules, firebase.json)
+        run: |
+          node -e "for (const f of ['database.rules.json', 'firebase.json']) { JSON.parse(require('fs').readFileSync(f, 'utf8')); console.log(f + ' OK'); }"

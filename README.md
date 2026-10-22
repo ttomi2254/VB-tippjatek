@@ -1,5 +1,7 @@
 # World Cup 2026 Prediction Game
 
+[![Tests](https://github.com/bummafejbe/VB-tippjatek/actions/workflows/test.yml/badge.svg)](https://github.com/bummafejbe/VB-tippjatek/actions/workflows/test.yml)
+
 A prediction game web app I built for a group of friends for the 2026 FIFA World Cup: everyone tips the score of every match, and points and the leaderboard update live as games are played.
 
 About 20 people used it throughout the tournament (June–July 2026). The UI is in Hungarian.
@@ -47,7 +49,7 @@ About 20 people used it throughout the tournament (June–July 2026). The UI is 
   - writes the live score.
 - **Why the sync runs on a server:** football-data.org doesn't allow browser (CORS) requests from the production domain, so the API is called from GitHub Actions.
 - **Security rules.** All game data can be read only by approved (`active`) users or admins. Email addresses are kept in a separate `userPrivate` branch that only the user and admins can read. Tips are validated (shape, value range) and can't be changed once the match has a result. Users can't approve themselves.
-- **Tests.** The sync logic is built from pure decision functions (`planResultUpdate`, `planKnockoutResult`, `planNameUpdate`, `pickFinalResult`, …) covered by 56 dependency-free unit tests: `node .github/scripts/sync-results.test.js`.
+- **Tests.** The sync logic is built from pure decision functions (`planResultUpdate`, `planKnockoutResult`, `planNameUpdate`, `pickFinalResult`, …) covered by 56 dependency-free unit tests: `node .github/scripts/sync-results.test.js`. The `test.yml` workflow runs them on every push and pull request, along with a syntax check of the app's inline script and validation of the JSON configs.
 
 ## Challenges and what I learned
 
