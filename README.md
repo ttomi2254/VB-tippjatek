@@ -1,6 +1,6 @@
 # World Cup 2026 Prediction Game
 
-[![Tests](https://github.com/bummafejbe/VB-tippjatek/actions/workflows/test.yml/badge.svg)](https://github.com/bummafejbe/VB-tippjatek/actions/workflows/test.yml)
+[![Tests](https://github.com/ttomi2254/VB-tippjatek/actions/workflows/test.yml/badge.svg)](https://github.com/ttomi2254/VB-tippjatek/actions/workflows/test.yml)
 
 A prediction game web app I built for a group of friends for the 2026 FIFA World Cup: everyone tips the score of every match, and points and the leaderboard update live as games are played.
 
